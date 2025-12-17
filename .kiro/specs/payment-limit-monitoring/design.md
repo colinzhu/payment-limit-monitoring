@@ -11,14 +11,14 @@ The architecture emphasizes real-time processing, data consistency, and operatio
 The system follows a microservices architecture with event-driven processing to handle high-volume settlement flows efficiently:
 
 ### Core Components
-- **Settlement Ingestion Service**: Receives and validates settlement flows from multiple PTS endpoints
-- **Rule Engine Integration**: Fetches and applies filtering criteria from external rule systems
-- **Aggregation Engine**: Calculates group subtotals with currency conversion
-- **Limit Monitoring Service**: Evaluates groups against exposure limits and manages status transitions
-- **Approval Workflow Service**: Handles two-step approval process with audit trails
+- **Settlement Ingestion Service**: Receives settlement flows and appends them to the event store
+- **Event Store**: Immutable append-only log of all settlement events with processing order
+- **Background Calculation Service**: Single-threaded processor that reads events and updates materialized views
+- **Materialized View Manager**: Maintains read-optimized views of group subtotals and settlement statuses
+- **Approval Workflow Service**: Handles two-step approval process with immediate updates
 - **API Gateway**: Provides external system integration and manual recalculation endpoints
 - **Notification Service**: Sends authorization notifications to downstream systems
-- **Data Access Layer**: Manages settlement storage, versioning, and historical data
+- **Rule Engine Integration**: Fetches filtering criteria and exchange rates for calculations
 
 ### External Integrations
 - **Primary Trading Systems (PTS)**: Source of settlement flows
@@ -34,9 +34,9 @@ The system follows a microservices architecture with event-driven processing to 
 - **API Framework**: REST APIs with OpenAPI specification
 - **Background Processing**: Scheduled jobs for rule and rate synchronization
 
-### Performance Optimization Strategy
+### Performance Optimization and Concurrency Strategy
 
-The system design addresses several critical performance challenges that arise in high-volume financial processing:
+The system design addresses several critical performance and concurrency challenges that arise in high-volume financial processing:
 
 #### Challenge 1: Mass Status Updates During Limit Fluctuations
 **Problem**: When a group with 10,000 settlements fluctuates around the 500M USD limit (due to new settlements or version updates), updating the status field of all 10,000 settlement records every few seconds would create severe database performance issues.
@@ -68,13 +68,278 @@ The system design addresses several critical performance challenges that arise i
 - Simplifies the calculation logic and maintains data consistency
 - Exchange rates are cached in Redis for performance
 
+#### Challenge 4: Race Conditions in Concurrent Subtotal Calculations
+**Problem**: When multiple settlements for the same group arrive within milliseconds, each triggers a subtotal calculation. Without proper concurrency control, these calculations can overwrite each other randomly, leading to incorrect subtotals.
+
+**Solution - Atomic Increment Operations**:
+Instead of reading-calculating-updating, use atomic database operations that work with deltas:
+
+```sql
+-- Atomic increment approach - add new settlement
+UPDATE settlement_groups 
+SET subtotal_usd = subtotal_usd + ?, 
+    settlement_count = settlement_count + 1,
+    version = version + 1, 
+    last_calculated_at = NOW()
+WHERE group_id = ?
+
+-- Atomic update approach - replace settlement version
+UPDATE settlement_groups 
+SET subtotal_usd = subtotal_usd - ? + ?, -- subtract old, add new
+    version = version + 1,
+    last_calculated_at = NOW()
+WHERE group_id = ?
+```
+
+**Detailed Implementation Strategy**:
+1. **New Settlement**: Atomically increment subtotal by the settlement's USD amount
+2. **Settlement Version Update**: Atomically subtract old amount and add new amount in single operation
+3. **Settlement Group Migration**: Use database transaction to atomically decrement from old group and increment to new group
+4. **Eligibility Changes**: When filtering rules change, recalculate entire group subtotal from scratch using SELECT SUM() with current rules
+
+**Fallback for Complex Scenarios**:
+For operations that cannot use atomic increments (like rule changes affecting eligibility), implement distributed locking:
+- Use Redis distributed locks per group_id
+- Lock acquisition timeout: 5 seconds
+- Lock hold time: maximum 30 seconds
+- Implement lock renewal for long-running calculations
+
+**Race Condition Examples - Solved**:
+
+**Scenario 1: New Settlements**
+```
+Initial State: Group has subtotal = 400M USD, count = 5 settlements
+
+Concurrent Scenario:
+- Settlement A (100M USD) arrives at time T
+- Settlement B (150M USD) arrives at time T+1ms
+
+Old Approach (PROBLEMATIC):
+- Both read: subtotal = 400M, count = 5
+- A calculates: 400M + 100M = 500M, count = 6
+- B calculates: 400M + 150M = 550M, count = 6  
+- Result: Incorrect subtotal (either 500M or 550M, missing one settlement)
+
+New Approach (CORRECT):
+- A executes: UPDATE SET subtotal = subtotal + 100, count = count + 1
+- B executes: UPDATE SET subtotal = subtotal + 150, count = count + 1
+- Result: Correct subtotal = 650M USD, count = 7 settlements
+```
+
+**Scenario 2: Settlement Version Updates (Out-of-Order Processing)**
+```
+Initial State: 
+- Group has subtotal = 500M USD
+- Settlement X version 1: amount = 80M USD (included in subtotal)
+
+Out-of-Order Scenario:
+- Settlement X version 3 (amount = 90M USD) arrives at time T
+- Settlement X version 2 (amount = 120M USD) arrives at time T+1ms
+
+Challenge: Version 3 arrives before version 2, but version 2 should be ignored since version 3 is newer
+
+Solution - Version-Aware Processing with Compensation:
+
+1. When processing version 3 (arrives first):
+   - Check: Is version 3 > current max version (1)? YES
+   - Read Settlement X version 1: old_amount = 80M
+   - Calculate delta: 90M - 80M = +10M
+   - Execute: UPDATE groups SET subtotal = subtotal + 10 WHERE group_id = ?
+   - Store Settlement X version 3 with amount = 90M
+   - Update max_processed_version = 3
+
+2. When processing version 2 (arrives second):
+   - Check: Is version 2 > current max version (3)? NO
+   - Action: IGNORE - this is a stale version
+   - No group update, no storage
+
+Alternative Implementation - Idempotent Recalculation:
+Instead of delta calculations, use idempotent operations:
+
+```sql
+-- For any settlement version update, recalculate the entire settlement's contribution
+BEGIN TRANSACTION;
+
+-- Lock the settlement to prevent concurrent updates
+SELECT settlement_id FROM settlements 
+WHERE settlement_id = ? 
+FOR UPDATE;
+
+-- Get the current contribution of this settlement to the group
+SELECT COALESCE(SUM(amount * exchange_rate), 0) as current_contribution
+FROM settlements s
+JOIN exchange_rates r ON s.currency = r.from_currency
+WHERE s.settlement_id = ? 
+AND s.settlement_version = (
+    SELECT MAX(settlement_version) 
+    FROM settlements 
+    WHERE settlement_id = s.settlement_id
+);
+
+-- Insert/Update the new version (with conflict resolution)
+INSERT INTO settlements (...) VALUES (...)
+ON CONFLICT (settlement_id, settlement_version) 
+DO NOTHING; -- Ignore if already processed
+
+-- Calculate new contribution after the insert
+SELECT COALESCE(SUM(amount * exchange_rate), 0) as new_contribution
+FROM settlements s
+JOIN exchange_rates r ON s.currency = r.from_currency  
+WHERE s.settlement_id = ?
+AND s.settlement_version = (
+    SELECT MAX(settlement_version) 
+    FROM settlements 
+    WHERE settlement_id = s.settlement_id
+);
+
+-- Apply the net change atomically
+UPDATE settlement_groups 
+SET subtotal_usd = subtotal_usd - current_contribution + new_contribution,
+    version = version + 1
+WHERE group_id = ?;
+
+COMMIT;
+```
+
+Benefits of Idempotent Approach:
+- Handles out-of-order processing correctly
+- Duplicate processing is safe (idempotent)
+- Always uses the latest version regardless of arrival order
+- Compensates for any previous incorrect calculations
+```
+
+### Simple Event-Driven Architecture Solution
+
+Instead of trying to solve complex race conditions with locks and atomic operations, let's use a fundamentally different approach that eliminates the problems entirely.
+
+#### Core Insight: Don't Calculate - Just Store Events
+
+**The Problem with Current Approach**: We're trying to maintain real-time calculated state (subtotals, statuses) which creates all the race condition complexity.
+
+**Simple Solution**: Store settlement events in order, calculate everything on-demand from the event stream.
+
+#### New Architecture: Event Sourcing with Materialized Views
+
+**1. Settlement Event Store**
+```typescript
+interface SettlementEvent {
+  eventId: string;
+  settlementId: string;
+  settlementVersion: number;
+  eventType: 'SETTLEMENT_RECEIVED' | 'SETTLEMENT_UPDATED';
+  eventTimestamp: Date;
+  processingOrder: number; // Auto-incrementing sequence
+  settlementData: {
+    pts: string;
+    processingEntity: string;
+    counterpartyId: string;
+    valueDate: Date;
+    currency: string;
+    amount: number;
+  };
+}
+```
+
+**2. Background Calculation Service**
+- Single-threaded processor that reads events in order
+- Calculates group subtotals sequentially (no race conditions possible)
+- Updates materialized views with current state
+- Runs every few seconds, processes all new events
+
+**3. Materialized Views (Read-Only)**
+```typescript
+interface GroupSubtotal {
+  groupId: string;
+  pts: string;
+  processingEntity: string;
+  counterpartyId: string;
+  valueDate: Date;
+  subtotalUsd: number;
+  lastProcessedEventId: string;
+  calculatedAt: Date;
+}
+
+interface SettlementStatus {
+  settlementId: string;
+  currentVersion: number;
+  status: 'CREATED' | 'BLOCKED' | 'PENDING_AUTHORISE' | 'AUTHORISED';
+  groupSubtotal: number;
+  exposureLimit: number;
+}
+```
+
+#### How This Solves All Problems
+
+**Race Conditions**: Eliminated - single-threaded processing in event order
+**Out-of-Order Processing**: Handled - events are processed by `processingOrder`, not arrival time
+**Version Updates**: Simple - just another event in the stream
+**Mass Updates**: Eliminated - no stored status fields to update
+**Performance**: Excellent - writes are just appends, reads are from materialized views
+
+#### Processing Flow
+
+**1. Settlement Ingestion (Fast)**
+```
+Receive Settlement → Validate → Append to Event Store → Return ACK
+(No calculations, no locks, just append - extremely fast)
+```
+
+**2. Background Processing (Sequential)**
+```
+Every 5 seconds:
+1. Read new events in processingOrder
+2. For each event:
+   - Apply filtering rules (current rules)
+   - Update group subtotal (no race conditions - single thread)
+   - Calculate status based on current limits
+   - Update materialized views
+3. Mark events as processed
+```
+
+**3. Query Processing (Fast)**
+```
+UI/API Queries → Read from Materialized Views → Return Results
+(No calculations needed, just read pre-computed state)
+```
+
+#### Benefits of This Approach
+
+**Simplicity**: No complex locking, atomic operations, or race condition handling
+**Performance**: Writes are O(1) appends, reads are O(1) lookups
+**Consistency**: Single-threaded processing guarantees consistent state
+**Auditability**: Complete event history for compliance
+**Scalability**: Can replay events to rebuild state, easy to debug
+**Flexibility**: Can change calculation logic and replay events
+
+#### Handling High Volume
+
+**Event Ingestion**: Can handle 200K settlements in 30 minutes easily (just appends)
+**Processing Lag**: 5-second processing window means status updates appear within 5-10 seconds
+**Scaling**: If processing can't keep up, add more background processors (partition by group)
+
+#### Real-Time Requirements
+
+**Status Updates**: Available within 5-10 seconds (acceptable per requirements)
+**API Queries**: Instant (reading materialized views)
+**Approval Actions**: Update approval table immediately, status recalculated in next cycle
+
+This approach is much simpler, more reliable, and easier to understand than complex concurrency control mechanisms.
+
+**Alternative - Event Sourcing for Extreme High Contention**:
+For groups with extremely high settlement volumes (>1000 settlements/second), implement event sourcing:
+- Store settlement events in an append-only log
+- Use background processors to calculate subtotals from event streams
+- Provide eventual consistency with conflict resolution
+- Maintain real-time approximations with periodic exact calculations
+
 #### Performance Benefits
 This approach provides several key benefits:
 - **Minimal Database Writes**: Only factual settlement data and group subtotals are persisted
 - **Scalable Updates**: Group-level updates scale with number of groups, not individual settlements
 - **Consistent Calculations**: All computations use current rules, limits, and exchange rates
 - **Cache Efficiency**: Computed values are cached to reduce repeated calculations
-- **Data Integrity**: Immutable settlement records prevent data corruption during high-volume processing
+- **Data Integrity**: Immutable settlement records and optimistic locking prevent data corruption during high-volume processing
+- **Concurrency Safety**: Optimistic locking ensures subtotal calculations are atomic and consistent
 
 ## Components and Interfaces
 
@@ -118,6 +383,27 @@ GET /api/settlements/{settlementId}/status
 - Compute individual settlement status dynamically from group state
 - Batch process settlement updates to minimize database transactions
 
+**Concurrency Control:**
+- Use atomic increment/decrement operations for subtotal updates to avoid read-calculate-update race conditions
+- Implement distributed locking (Redis) for complex operations that require full recalculation
+- Use database transactions for multi-group operations (settlement migration)
+- Maintain operation idempotency to handle duplicate processing
+- Monitor lock contention and implement backoff strategies for high-volume groups
+
+**Atomic Operations by Scenario:**
+- **New Settlement**: `subtotal += settlement_usd_amount`
+- **Version Update (Idempotent)**: 
+  1. Lock settlement by `settlement_id` (not version)
+  2. Calculate current contribution of settlement (latest version)
+  3. Insert new version with `ON CONFLICT DO NOTHING` (idempotent)
+  4. Calculate new contribution of settlement (after insert)
+  5. `subtotal = subtotal - old_contribution + new_contribution` (atomic)
+- **Group Migration**: Transaction with `old_group.subtotal -= amount; new_group.subtotal += amount`
+- **Rule Changes**: Distributed lock + full recalculation from `SELECT SUM(amount * rate) WHERE eligible`
+
+**Key Insight for Out-of-Order Processing**: 
+Instead of tracking deltas between versions, we recalculate the entire settlement's contribution idempotently. This handles out-of-order arrival, duplicate processing, and ensures the group subtotal always reflects the latest version regardless of processing order.
+
 ### Limit Monitoring Service
 **Responsibilities:**
 - Compare group subtotals against exposure limits
@@ -153,66 +439,75 @@ GET /api/settlements/{settlementId}/status
 
 ## Data Models
 
-### Settlement Entity
+### Event Store (Write Side)
 ```typescript
-interface Settlement {
+interface SettlementEvent {
+  eventId: string;
   settlementId: string;
   settlementVersion: number;
-  pts: string;
-  processingEntity: string;
-  counterpartyId: string;
-  valueDate: Date;
-  currency: string;
-  amount: number;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-// Status and eligibility are computed dynamically, not stored
-interface SettlementStatus {
-  settlementId: string;
-  settlementVersion: number;
-  status: StatusEnum;
-  computedAt: Date;
-}
-
-enum StatusEnum {
-  CREATED = 'CREATED',
-  BLOCKED = 'BLOCKED',
-  PENDING_AUTHORISE = 'PENDING_AUTHORISE',
-  AUTHORISED = 'AUTHORISED'
+  eventType: 'SETTLEMENT_RECEIVED' | 'SETTLEMENT_UPDATED';
+  eventTimestamp: Date;
+  processingOrder: number; // Auto-incrementing sequence for ordering
+  settlementData: {
+    pts: string;
+    processingEntity: string;
+    counterpartyId: string;
+    valueDate: Date;
+    currency: string;
+    amount: number;
+  };
+  processed: boolean;
+  processedAt?: Date;
 }
 ```
 
-### Settlement Group
+### Materialized Views (Read Side)
 ```typescript
-interface SettlementGroup {
+interface GroupSubtotal {
   groupId: string;
   pts: string;
   processingEntity: string;
   counterpartyId: string;
   valueDate: Date;
   subtotalUsd: number;
-  exposureLimit: number;
   settlementCount: number;
   exceedsLimit: boolean;
-  lastCalculatedAt: Date;
+  exposureLimit: number;
+  lastProcessedEventId: string;
+  calculatedAt: Date;
 }
 
-// Separate table for approval actions to avoid mass updates
+interface SettlementView {
+  settlementId: string;
+  currentVersion: number;
+  pts: string;
+  processingEntity: string;
+  counterpartyId: string;
+  valueDate: Date;
+  currency: string;
+  amount: number;
+  usdAmount: number;
+  status: SettlementStatus;
+  groupId: string;
+  groupSubtotal: number;
+  isEligibleForCalculation: boolean;
+  lastUpdated: Date;
+}
+
+enum SettlementStatus {
+  CREATED = 'CREATED',
+  BLOCKED = 'BLOCKED',
+  PENDING_AUTHORISE = 'PENDING_AUTHORISE',
+  AUTHORISED = 'AUTHORISED'
+}
+
 interface SettlementApproval {
   settlementId: string;
   settlementVersion: number;
-  status: ApprovalStatusEnum;
   requestedBy?: string;
   requestedAt?: Date;
   authorizedBy?: string;
   authorizedAt?: Date;
-}
-
-enum ApprovalStatusEnum {
-  PENDING_AUTHORISE = 'PENDING_AUTHORISE',
-  AUTHORISED = 'AUTHORISED'
 }
 ```
 
