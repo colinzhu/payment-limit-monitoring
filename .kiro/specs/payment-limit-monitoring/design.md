@@ -581,9 +581,10 @@ function processSettlementVersion(newSettlement: SettlementData) {
       );
       appendToEventStore(migrationEvent);
     } else {
-      // Standard settlement update
-      const updateEvent = createSettlementUpdateEvent(newSettlement);
-      appendToEventStore(updateEvent);
+      // Settlement version update within same group - still use SETTLEMENT_RECEIVED
+      // The background processor will handle version comparison automatically
+      const receiveEvent = createSettlementReceiveEvent(newSettlement);
+      appendToEventStore(receiveEvent);
     }
   } else {
     // New settlement
@@ -733,7 +734,7 @@ interface SettlementEvent {
   eventId: string;
   settlementId: string;
   settlementVersion: number;
-  eventType: 'SETTLEMENT_RECEIVED' | 'SETTLEMENT_UPDATED' | 'SETTLEMENT_GROUP_MIGRATION';
+  eventType: 'SETTLEMENT_RECEIVED' | 'SETTLEMENT_GROUP_MIGRATION';
   eventTimestamp: Date;
   processingOrder: number; // Auto-incrementing sequence for ordering
   settlementData: {
