@@ -84,14 +84,37 @@ class BackgroundCalculationService {
     const newEvents = getUnprocessedEvents(); // Ordered by processingOrder
     
     for (const event of newEvents) {
-      // Complete recalculation for affected group
-      const groupId = calculateGroupId(event.settlementData);
-      const newSubtotal = calculateCompleteGroupSubtotal(groupId);
+      if (event.eventType === 'SETTLEMENT_GROUP_MIGRATION') {
+        this.handleGroupMigration(event as SettlementGroupMigrationEvent);
+      } else {
+        // Standard settlement processing
+        const groupId = calculateGroupId(event.settlementData);
+        const newSubtotal = calculateCompleteGroupSubtotal(groupId);
+        
+        // Update materialized view
+        updateGroupSubtotal(groupId, newSubtotal);
+      }
       
-      // Update materialized view
-      updateGroupSubtotal(groupId, newSubtotal);
       markEventAsProcessed(event.eventId);
     }
+  }
+  
+  handleGroupMigration(event: SettlementGroupMigrationEvent) {
+    const { oldGroupId, newGroupId, settlementData } = event.migrationData;
+    
+    // 1. Recalculate old group subtotal (settlement no longer included)
+    const oldGroupSubtotal = calculateCompleteGroupSubtotal(oldGroupId);
+    updateGroupSubtotal(oldGroupId, oldGroupSubtotal);
+    
+    // 2. Recalculate new group subtotal (settlement now included)
+    const newGroupSubtotal = calculateCompleteGroupSubtotal(newGroupId);
+    updateGroupSubtotal(newGroupId, newGroupSubtotal);
+    
+    // 3. Reset approval status as per requirements (new version invalidates previous approvals)
+    resetApprovalStatus(settlementData.settlementId, settlementData.settlementVersion);
+    
+    // 4. Create audit record for the migration
+    createMigrationAuditRecord(event);
   }
   
   calculateCompleteGroupSubtotal(groupId: string): number {
@@ -134,26 +157,32 @@ Event-Driven Processing (CORRECT):
 3. Result: Correct subtotal = 650M USD (both settlements included)
 ```
 
-**Scenario: Out-of-Order Settlement Versions**
+**Scenario: Settlement Group Migration (CounterpartyId Change)**
 ```
-Initial State: Settlement X version 1 (80M USD) in group
+Initial State: 
+- Settlement X version 1 in Group A (Counterparty_1, subtotal = 300M USD)
+- Settlement X contributes 50M USD to Group A
 
-Out-of-Order Events:
-- Event A: Settlement X version 3 (90M USD) - processingOrder = 2001
-- Event B: Settlement X version 2 (120M USD) - processingOrder = 2002
+Migration Event:
+- Settlement X version 2 changes counterpartyId from Counterparty_1 to Counterparty_2
+- This moves Settlement X from Group A to Group B
 
 Event-Driven Processing (CORRECT):
-1. Process Event 2001: Store version 3, recalculate group (uses version 3: 90M)
-2. Process Event 2002: Store version 2, recalculate group (still uses version 3: 90M)
-3. Result: Correct subtotal uses latest version (3) regardless of arrival order
+1. Generate SETTLEMENT_GROUP_MIGRATION event with both old and new group context
+2. Process migration event: 
+   - Recalculate Group A subtotal = 250M USD (Settlement X removed)
+   - Recalculate Group B subtotal = 50M USD (Settlement X added)
+   - Reset approval status for Settlement X (new version invalidates previous approvals)
+3. Result: Atomic migration with both groups correctly updated
 ```
 
 **Benefits of Event-Driven Approach:**
 - **No Race Conditions**: Single-threaded processing eliminates concurrency issues
-- **Handles Complexity**: Versions, directions, business status changes all handled correctly
-- **Simple Logic**: Complete recalculation is easier to understand and debug
+- **Handles Complexity**: Versions, directions, business status changes, and group migrations all handled correctly
+- **Atomic Group Migration**: Single migration event ensures both groups are updated consistently
+- **Simple Logic**: Complete recalculation is easier to understand and debug than incremental updates
 - **Consistent Results**: Always produces correct subtotal regardless of event timing
-- **Audit Trail**: Complete event history for compliance and debugging
+- **Audit Trail**: Complete event history for compliance and debugging, including group migration tracking
 
 ### Simple Event-Driven Architecture Solution
 
@@ -236,7 +265,7 @@ interface SettlementApproval {
 
 **1. Settlement Ingestion (Very Fast)**
 ```
-Receive Settlement → Validate → Store as Event → Return ACK
+Receive Settlement → Validate → Detect Group Changes → Store Event → Return ACK
 (No calculations, no locks, just store - extremely fast)
 ```
 
@@ -244,8 +273,8 @@ Receive Settlement → Validate → Store as Event → Return ACK
 ```
 1. Read new events in processingOrder
 2. For each event:
-   - Apply current filtering rules
-   - Update group subtotal in summary table
+   - If SETTLEMENT_GROUP_MIGRATION: Handle atomic group transfer
+   - If standard event: Apply current filtering rules and update group subtotal
    - Calculate status based on current limits
    - Update settlement status in summary table
 3. Mark events as processed
@@ -367,6 +396,120 @@ Our Approach (INSTANT):
 
 This approach is much simpler, more reliable, and easier to understand than complex concurrency control mechanisms.
 
+### Group Migration Handling
+
+The system handles settlement group migrations (when PTS, Processing_Entity, Counterparty_ID, or Value_Date changes) through a specialized event-driven approach that ensures atomic transfers between groups.
+
+#### Migration Detection and Event Generation
+
+**Detection Process:**
+During settlement ingestion, the system compares new settlement versions against existing versions to detect group key changes:
+
+```typescript
+function createGroupMigrationEvent(
+  oldSettlement: SettlementData, 
+  newSettlement: SettlementData, 
+  changedFields: string[]
+): SettlementGroupMigrationEvent {
+  const oldGroupId = calculateGroupId(oldSettlement);
+  const newGroupId = calculateGroupId(newSettlement);
+  
+  return {
+    eventId: generateEventId(),
+    settlementId: newSettlement.settlementId,
+    settlementVersion: newSettlement.settlementVersion,
+    eventType: 'SETTLEMENT_GROUP_MIGRATION',
+    eventTimestamp: new Date(),
+    processingOrder: getNextProcessingOrder(),
+    settlementData: newSettlement,
+    migrationData: {
+      oldGroupId,
+      newGroupId,
+      oldCounterpartyId: oldSettlement.counterpartyId,
+      newCounterpartyId: newSettlement.counterpartyId,
+      changedFields,
+      oldGroupKeys: {
+        pts: oldSettlement.pts,
+        processingEntity: oldSettlement.processingEntity,
+        counterpartyId: oldSettlement.counterpartyId,
+        valueDate: oldSettlement.valueDate
+      },
+      newGroupKeys: {
+        pts: newSettlement.pts,
+        processingEntity: newSettlement.processingEntity,
+        counterpartyId: newSettlement.counterpartyId,
+        valueDate: newSettlement.valueDate
+      }
+    },
+    processed: false
+  };
+}
+```
+
+#### Atomic Migration Processing
+
+**Background Processing:**
+The Background Calculation Service handles migration events atomically:
+
+```typescript
+function handleGroupMigration(event: SettlementGroupMigrationEvent) {
+  const { oldGroupId, newGroupId, settlementData, changedFields } = event.migrationData;
+  
+  // 1. Update settlement record with new group assignment
+  updateSettlementGroup(settlementData.settlementId, newGroupId);
+  
+  // 2. Recalculate both affected groups completely
+  const oldGroupSubtotal = calculateCompleteGroupSubtotal(oldGroupId);
+  const newGroupSubtotal = calculateCompleteGroupSubtotal(newGroupId);
+  
+  // 3. Update materialized views
+  updateGroupSubtotal(oldGroupId, oldGroupSubtotal);
+  updateGroupSubtotal(newGroupId, newGroupSubtotal);
+  
+  // 4. Reset approval status (new version invalidates previous approvals)
+  resetApprovalStatus(settlementData.settlementId, settlementData.settlementVersion);
+  
+  // 5. Create comprehensive audit record
+  createMigrationAuditRecord({
+    settlementId: settlementData.settlementId,
+    settlementVersion: settlementData.settlementVersion,
+    action: 'GROUP_MIGRATION',
+    changedFields,
+    oldGroupContext: event.migrationData.oldGroupKeys,
+    newGroupContext: event.migrationData.newGroupKeys,
+    oldGroupSubtotal,
+    newGroupSubtotal
+  });
+}
+```
+
+#### Migration Benefits
+
+**Atomicity:** Single event ensures both groups are updated consistently - no risk of partial migration
+**Audit Trail:** Complete record of what changed, when, and the impact on both groups
+**Performance:** Only two group subtotals need recalculation, not individual settlement records
+**Consistency:** Leverages existing event-driven architecture for reliable processing
+**Limit Handling:** Automatically applies correct exposure limits for each counterparty group
+
+#### Migration Scenarios
+
+**CounterpartyId Change:**
+- Settlement moves from one counterparty group to another
+- Both groups recalculated with appropriate exposure limits
+- Status computation uses correct limit for new counterparty
+
+**Multiple Field Changes:**
+- Single migration event handles multiple group key changes
+- Prevents multiple intermediate group assignments
+- Ensures settlement ends up in correct final group
+
+**Complex Migrations:**
+- PTS + CounterpartyId change handled atomically
+- Value date changes across month boundaries
+- Processing entity reorganizations
+
+This migration approach ensures data consistency while maintaining the performance benefits of the event-driven architecture.
+
 **Alternative - Event Sourcing for Extreme High Contention**:
 For groups with extremely high settlement volumes (>1000 settlements/second), implement event sourcing:
 - Store settlement events in an append-only log
@@ -415,13 +558,55 @@ This approach provides several key benefits:
 - Validate settlement data structure and completeness including direction, type, and business status
 - Apply filtering rules to determine calculation eligibility
 - Store settlements with versioning support
+- Detect group key changes (PTS, Processing_Entity, Counterparty_ID, Value_Date) and generate migration events
 - Handle out-of-order settlement version processing using version numbers
 - Trigger aggregation calculations for eligible settlements
+
+**Group Migration Detection:**
+The service detects when a settlement version changes any group key fields by comparing the new version against the latest existing version:
+
+```typescript
+function processSettlementVersion(newSettlement: SettlementData) {
+  const existingSettlement = getLatestSettlement(newSettlement.settlementId);
+  
+  if (existingSettlement) {
+    const groupKeysChanged = detectGroupKeyChanges(existingSettlement, newSettlement);
+    
+    if (groupKeysChanged.length > 0) {
+      // Generate migration event for atomic group transfer
+      const migrationEvent = createGroupMigrationEvent(
+        existingSettlement, 
+        newSettlement, 
+        groupKeysChanged
+      );
+      appendToEventStore(migrationEvent);
+    } else {
+      // Standard settlement update
+      const updateEvent = createSettlementUpdateEvent(newSettlement);
+      appendToEventStore(updateEvent);
+    }
+  } else {
+    // New settlement
+    const receiveEvent = createSettlementReceiveEvent(newSettlement);
+    appendToEventStore(receiveEvent);
+  }
+}
+
+function detectGroupKeyChanges(oldSettlement: SettlementData, newSettlement: SettlementData): string[] {
+  const changedFields = [];
+  if (oldSettlement.pts !== newSettlement.pts) changedFields.push('pts');
+  if (oldSettlement.processingEntity !== newSettlement.processingEntity) changedFields.push('processingEntity');
+  if (oldSettlement.counterpartyId !== newSettlement.counterpartyId) changedFields.push('counterpartyId');
+  if (oldSettlement.valueDate !== newSettlement.valueDate) changedFields.push('valueDate');
+  return changedFields;
+}
+```
 
 **Key Interfaces:**
 ```
 POST /api/settlements/ingest
 - Accepts settlement data from PTS systems including direction, type, and business status
+- Detects group key changes and generates appropriate events
 - Returns acknowledgment with processing status
 
 GET /api/settlements/{settlementId}/status
@@ -434,7 +619,8 @@ GET /api/settlements/{settlementId}/status
 - RECEIVE settlements and CANCELLED settlements are stored but excluded from risk calculations
 - NET settlements can change direction between PAY and RECEIVE based on underlying settlement updates
 - Settlement versions are processed based on version number, not arrival time
-- Out-of-order version processing is handled correctly using the event-driven architecture arrival order
+- Group key changes trigger atomic migration events to ensure consistent group transfers
+- Out-of-order version processing is handled correctly using the event-driven architecture
 
 ### Aggregation Engine
 **Responsibilities:**
@@ -447,12 +633,12 @@ GET /api/settlements/{settlementId}/status
 
 **Key Operations:**
 - Real-time subtotal calculation (< 10 seconds) using materialized group totals
+- Atomic group migration when settlement group keys change (PTS, Processing_Entity, Counterparty_ID, Value_Date)
 - Group rebalancing when settlement details change
 - Dynamic currency conversion with latest available rates
 - Efficient handling of high-volume updates without mass settlement record updates
 - On-demand status computation to avoid performance bottlenecks
 - Complete group recalculation rather than incremental updates to ensure accuracy
-- Atomic group migration when settlement group keys change (PTS, Processing_Entity, Counterparty_ID, Value_Date)
 
 **Business Logic:**
 - Only PAY settlements contribute to subtotal calculations
@@ -460,7 +646,8 @@ GET /api/settlements/{settlementId}/status
 - RECEIVE settlements are excluded regardless of business status
 - NET settlements require special handling for direction changes
 - Complete recalculation ensures accuracy when settlement amounts change or eligibility changes
-- Group migration handling ensures settlements are properly moved between groups when key attributes change
+- Atomic group migration handling ensures settlements are properly moved between groups when key attributes change
+- Group migration events provide complete audit trail and prevent partial transfers
 - Counterparty changes require recalculation of both old and new groups with appropriate exposure limits
 
 **Performance Optimizations:**
@@ -546,7 +733,7 @@ interface SettlementEvent {
   eventId: string;
   settlementId: string;
   settlementVersion: number;
-  eventType: 'SETTLEMENT_RECEIVED' | 'SETTLEMENT_UPDATED';
+  eventType: 'SETTLEMENT_RECEIVED' | 'SETTLEMENT_UPDATED' | 'SETTLEMENT_GROUP_MIGRATION';
   eventTimestamp: Date;
   processingOrder: number; // Auto-incrementing sequence for ordering
   settlementData: {
@@ -562,6 +749,29 @@ interface SettlementEvent {
   };
   processed: boolean;
   processedAt?: Date;
+}
+
+interface SettlementGroupMigrationEvent extends SettlementEvent {
+  eventType: 'SETTLEMENT_GROUP_MIGRATION';
+  migrationData: {
+    oldGroupId: string;
+    newGroupId: string;
+    oldCounterpartyId: string;
+    newCounterpartyId: string;
+    changedFields: ('pts' | 'processingEntity' | 'counterpartyId' | 'valueDate')[];
+    oldGroupKeys: {
+      pts: string;
+      processingEntity: string;
+      counterpartyId: string;
+      valueDate: Date;
+    };
+    newGroupKeys: {
+      pts: string;
+      processingEntity: string;
+      counterpartyId: string;
+      valueDate: Date;
+    };
+  };
 }
 ```
 
@@ -643,7 +853,8 @@ enum AuditAction {
   CREATE = 'CREATE',
   REQUEST_RELEASE = 'REQUEST_RELEASE',
   AUTHORISE = 'AUTHORISE',
-  STATUS_RESET = 'STATUS_RESET'
+  STATUS_RESET = 'STATUS_RESET',
+  GROUP_MIGRATION = 'GROUP_MIGRATION'
 }
 ```
 
@@ -723,9 +934,9 @@ Based on the requirements analysis, the following correctness properties must be
 *For any* NET settlement that changes direction between PAY and RECEIVE, the group subtotal should be recalculated to reflect the current direction and inclusion status
 **Validates: Requirements 2.6**
 
-**Property 10: Group Migration Accuracy**
-*For any* settlement that changes group keys (PTS, Processing_Entity, Counterparty_ID, or Value_Date), it should be removed from the old group and added to the correct new group, with both subtotals recalculated accurately
-**Validates: Requirements 2.7**
+**Property 10: Atomic Group Migration**
+*For any* settlement that changes group keys (PTS, Processing_Entity, Counterparty_ID, or Value_Date), it should be atomically moved from the old group to the new group with both subtotals recalculated accurately and approval status reset
+**Validates: Requirements 2.7, 2.8**
 
 ### Status Management Properties
 
