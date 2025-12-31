@@ -6,16 +6,18 @@
 - **Database**: Oracle Database
 - **Messaging**: No MQ (event-driven via Vert.x event bus)
 
+## Architecture
+- **Modularized architecture**: 
 ---
 
 ## Core Concept: Sequence ID as REF_ID
 
 The system uses an **auto-incrementing sequence ID** as the foundation for consistency:
-- Every settlement saved gets a monotonically increasing sequence ID
+- Every settlement saved gets a monotonically increasing sequence ID - `SEQ_ID`
 - When creating the `SETTLEMENT` table, it should be defined as `ORDER` for the sequence ID field
-- This ID serves as `REF_ID` in the `RUNNING_TOTAL` table
+- This ID will be used in the `RUNNING_TOTAL` table
 - **Critical**: Sequence ID is NOT a version number - it only increases
-- `REF_ID` defines the scope: "calculate running totals using all settlements with ID ≤ REF_ID"
+- `SEQ_ID` defines the scope: "calculate running totals using all settlements with SEQ_ID ≤ x"
 
 ---
 
@@ -23,7 +25,7 @@ The system uses an **auto-incrementing sequence ID** as the foundation for consi
 
 ### SETTLEMENT Table
 Stores the **latest version** of each settlement:
-- `ID` - Auto-incrementing primary key (becomes REF_ID)
+- `SEQ_ID` - Auto-incrementing primary key
 - `SETTLEMENT_ID` - Business settlement identifier
 - `SETTLEMENT_VERSION` - Version number (timestamp in long format)
 - `PTS` - Primary Trading System source
@@ -55,7 +57,7 @@ Stores **latest** exchange rates for currency conversion:
 ### EVENT format (no need to store in DB)
 Triggers for running total recalculation:
 - `PTS`, `PROCESSING_ENTITY`, `COUNTERPARTY_ID`, `VALUE_DATE` - Group identifier
-- `REF_ID` - Sequence ID of the settlement, which triggered this event
+- `SEQ_ID` - `SEQ_ID` of the settlement, which triggered this event
 
 ### RUNNING_TOTAL Table
 Stores aggregated exposure data:
@@ -66,7 +68,7 @@ Stores aggregated exposure data:
 - `CREATE_TIME` - When this total was first calculated
 - `UPDATE_TIME` - When this total was last updated
 
-### ACTIVITIES Table
+### ACTIVITIES Table (Audit table)
 Records approval workflow and system actions:
 - `ID` - Auto-incrementing primary key
 - `PTS` - Trading system
@@ -85,7 +87,7 @@ Will use existing DB queue component to store the notification messages.
 ---
 
 ## Settlement Ingestion Flow
-When a settlement arrives from an HTTP request, it goes through the following steps. If there are any errors, reject the settlement with 500 status code.
+When a settlement arrives from an HTTP request (Vert.x HTTP server), it goes through the following steps. If there are any errors, reject the settlement with 500 status code.
 
 ### Step 0: Validate Settlement
 Before saving, validate all required fields:
@@ -101,9 +103,9 @@ If validation fails: Reject settlement and log error for investigation.
 
 ### Step 1: Save Settlement
 When a settlement arrives:
-1. Save to `SETTLEMENT` table (replaces current latest version)
+1. Insert to `SETTLEMENT` table
 2. Get the auto-generated sequence ID
-3. This ID becomes the `REF_ID` for event generation
+3. This ID becomes the `SEQ_ID` for event generation
 
 ### Step 2: Mark `IS_OLD` for old versions
 **Mark Old**:
@@ -115,7 +117,7 @@ WHERE SETTLEMENT_ID = ? AND PTS = ? AND PROCESSING_ENTITY = ?
 ```
 - Immediate after the new settlement is saved.
 - Old records will be moved to `SETTLEMENT_HIST` daily non-busy hours
-- Question: how about move old directly to `SETTLEMENT_HIST` without marking old?
+- Question: how about move old directly to `SETTLEMENT_HIST` without marking old? - Answer: No, because detect `COUNTERPARTY_ID` change needs to check the old record
 
 ### Step 3: Detect Counterparty Changes
 **Check for counterparty change**:
@@ -128,11 +130,12 @@ WHERE ID = (SELECT MAX(ID) FROM SETTLEMENT WHERE SETTLEMENT_ID = ? AND PTS = ? A
 - Immediate after the Mark Old is completed.
 
 ### Step 4: Generate Events
-- **Event format**: `PTS`, `PROCESSING_ENTITY`, `COUNTERPARTY_ID`, `VALUE_DATE` and `REF_ID` - Sequence ID of current settlement
+- **Event format**: `PTS`, `PROCESSING_ENTITY`, `COUNTERPARTY_ID`, `VALUE_DATE` and `SEQ_ID` - Sequence ID of current settlement
 - **Default**: 1 event
 - **If counterparty changed**: 2 events
   - One for old counterparty group
   - One for new counterparty group
+- Send to Vert.x event bus
 
 ### Step 5: Calculate Running Total
 Calculate the running total for the group in the event
@@ -148,9 +151,9 @@ Calculate the running total for the group in the event
   - SUM
 - **Save to Running Total**:
 ```sql
-UPDATE RUNNING_TOTAL SET RUNNING_TOTAL = ?, UPDATE_TIME = CURRENT_TIMESTAMP
+UPDATE RUNNING_TOTAL SET RUNNING_TOTAL = ?, UPDATE_TIME = CURRENT_TIMESTAMP, SEQ_ID = ?
 WHERE PTS = ? AND PROCESSING_ENTITY = ? AND COUNTERPARTY_ID = ? AND VALUE_DATE = ?
-AND REF_ID <= ? -- make sure it's "<=" so that can use same ID to trigger recalculation; also used to avoid concurrent updates by another thread/instance
+AND SEQ_ID <= ? -- make sure it's "<=" so that can use same ID to trigger recalculation; also used to avoid concurrent updates by another thread/instance
 ``` 
 
 
@@ -214,7 +217,7 @@ WHERE ... (user criteria)
 ```
 
 For each group:
-- Generate event with `REF_ID` = current max ID in `SETTLEMENT` table
+- Generate event with `SEQ_ID` = current max ID in `SETTLEMENT` table
 - Send the event to event bus for same processing logic to re-calculate
 
 ### Requirements
@@ -446,25 +449,6 @@ Body: {
 - Settlement processing handles duplicates
 - Version ordering by `SETTLEMENT_VERSION`
 - Locking for group recalculations
-
----
-
-## Audit & Compliance
-
-### Audit Log Table
-- `ID`, `SETTLEMENT_ID`, `USER_ID`, `ACTION_TYPE`
-- `TIMESTAMP`, `DETAILS`, `REF_ID`
-
-### Logged Actions
-- All settlement versions (7-year retention)
-- All approval actions (request, authorize)
-- All manual recalculations
-- All configuration changes
-
-### User Segregation
-- Requester ≠ Authorizer enforced
-- User ID tracked for all actions
-- Audit trail for compliance verification
 
 ---
 

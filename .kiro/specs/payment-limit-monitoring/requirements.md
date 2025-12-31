@@ -47,8 +47,8 @@ The Payment Limit Monitoring System is a financial risk management application t
 
 1. WHEN a settlement is received from an endpoint, the System SHALL validate and store the settlement data including PTS, Processing_Entity, Counterparty_ID, Value_Date, Currency, Amount, Settlement_ID, Settlement_Version, Settlement_Direction (PAY or RECEIVE), Settlement_Type (NET or GROSS), and Business_Status (PENDING, INVALID, VERIFIED, or CANCELLED)
 2. WHEN a settlement is received, the System SHALL evaluate the settlement against current filtering rules to determine if it should be included in running total calculations
-3. WHEN a settlement has direction PAY and business status is PENDING, INVALID, or VERIFIED, the System SHALL include it in group running total calculations for risk exposure monitoring
-4. WHEN a settlement has direction RECEIVE or business status is CANCELLED, the System SHALL store the settlement but exclude it from running total calculations
+3. WHEN a settlement has direction PAY and business status is PENDING, INVALID, or VERIFIED (standard filtering criteria), the System SHALL include it in group running total calculations for risk exposure monitoring
+4. WHEN a settlement has direction RECEIVE or business status is CANCELLED (standard filtering criteria), the System SHALL store the settlement but exclude it from running total calculations
 5. WHEN a NET settlement is received, the System SHALL handle potential direction changes between PAY and RECEIVE as the netted result may fluctuate based on underlying settlement updates
 6. WHEN a settlement matches the filtering criteria, has direction PAY, and business status is not CANCELLED, the System SHALL include it in group running total calculations and limit monitoring
 7. WHEN a settlement does not match the filtering criteria, has direction RECEIVE, or has business status CANCELLED, the System SHALL store the settlement but exclude it from running total calculations and limit monitoring
