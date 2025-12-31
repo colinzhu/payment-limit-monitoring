@@ -7,7 +7,7 @@
 - **Messaging**: No MQ (event-driven via Vert.x event bus)
 
 ## Architecture
-- **Modularized architecture**: 
+- **Critical**: Use Hexagonal Architecture
 ---
 
 ## Core Concept: Sequence ID as REF_ID
@@ -88,6 +88,7 @@ Will use existing DB queue component to store the notification messages.
 
 ## Settlement Ingestion Flow
 When a settlement arrives from an HTTP request (Vert.x HTTP server), it goes through the following steps. If there are any errors, reject the settlement with 500 status code.
+**Critical**: all the steps should be within one HTTP request/response
 
 ### Step 0: Validate Settlement
 Before saving, validate all required fields:
@@ -383,14 +384,13 @@ Body: {
   "valueDateTo": "date",
   "reason": "string"
 }
-Response: { "jobId": "12345", "status": "PENDING" }
+Response: { "status": "COMPLETED" }
 ```
 
 **Requirements:**
 - Admin/supervisor privileges required
 - Logs: user ID, timestamp, scope, reason
 - Returns job ID for tracking progress
-- Same batch processor handles recalculation
 
 ### Notification on AUTHORISED
 ```
