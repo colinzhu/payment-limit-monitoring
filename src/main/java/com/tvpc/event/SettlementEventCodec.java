@@ -18,7 +18,7 @@ public class SettlementEventCodec implements MessageCodec<SettlementEvent, Settl
                 .put("processingEntity", event.getProcessingEntity())
                 .put("counterpartyId", event.getCounterpartyId())
                 .put("valueDate", event.getValueDate().toString())
-                .put("seqId", event.getSeqId());
+                .put("seqId", event.getRefId());
 
         String encoded = json.encode();
         buffer.appendInt(encoded.length());

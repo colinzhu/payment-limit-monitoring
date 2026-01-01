@@ -12,14 +12,14 @@ public class SettlementEvent {
     private final String processingEntity;
     private final String counterpartyId;
     private final LocalDate valueDate;
-    private final Long seqId;  // The settlement's sequence ID
+    private final Long refId;  // The settlement's sequence ID
 
-    public SettlementEvent(String pts, String processingEntity, String counterpartyId, LocalDate valueDate, Long seqId) {
+    public SettlementEvent(String pts, String processingEntity, String counterpartyId, LocalDate valueDate, Long refId) {
         this.pts = pts;
         this.processingEntity = processingEntity;
         this.counterpartyId = counterpartyId;
         this.valueDate = valueDate;
-        this.seqId = seqId;
+        this.refId = refId;
     }
 
     public String getPts() {
@@ -38,8 +38,8 @@ public class SettlementEvent {
         return valueDate;
     }
 
-    public Long getSeqId() {
-        return seqId;
+    public Long getRefId() {
+        return refId;
     }
 
     /**
@@ -58,12 +58,12 @@ public class SettlementEvent {
                Objects.equals(processingEntity, that.processingEntity) &&
                Objects.equals(counterpartyId, that.counterpartyId) &&
                Objects.equals(valueDate, that.valueDate) &&
-               Objects.equals(seqId, that.seqId);
+               Objects.equals(refId, that.refId);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(pts, processingEntity, counterpartyId, valueDate, seqId);
+        return Objects.hash(pts, processingEntity, counterpartyId, valueDate, refId);
     }
 
     @Override
@@ -73,7 +73,7 @@ public class SettlementEvent {
                 ", processingEntity='" + processingEntity + '\'' +
                 ", counterpartyId='" + counterpartyId + '\'' +
                 ", valueDate=" + valueDate +
-                ", seqId=" + seqId +
+                ", seqId=" + refId +
                 '}';
     }
 }

@@ -6,15 +6,12 @@ import com.tvpc.domain.SettlementDirection;
 import com.tvpc.domain.SettlementType;
 import com.tvpc.dto.SettlementRequest;
 import com.tvpc.dto.ValidationResult;
-import com.tvpc.event.EventPublisher;
 import com.tvpc.event.SettlementEvent;
 import com.tvpc.repository.SettlementRepository;
 import com.tvpc.repository.RunningTotalRepository;
 import com.tvpc.repository.ActivityRepository;
 import com.tvpc.validation.SettlementValidator;
 import io.vertx.core.Future;
-import io.vertx.core.Promise;
-import io.vertx.core.Vertx;
 import io.vertx.sqlclient.SqlClient;
 import io.vertx.sqlclient.SqlConnection;
 import org.slf4j.Logger;
@@ -35,7 +32,6 @@ public class SettlementIngestionService {
     private final SettlementRepository settlementRepository;
     private final RunningTotalRepository runningTotalRepository;
     private final ActivityRepository activityRepository;
-    private final EventPublisher eventPublisher;
     private final SqlClient sqlClient;
     private final ConfigurationService configurationService;
 
@@ -44,7 +40,6 @@ public class SettlementIngestionService {
             SettlementRepository settlementRepository,
             RunningTotalRepository runningTotalRepository,
             ActivityRepository activityRepository,
-            EventPublisher eventPublisher,
             SqlClient sqlClient,
             ConfigurationService configurationService
     ) {
@@ -52,7 +47,6 @@ public class SettlementIngestionService {
         this.settlementRepository = settlementRepository;
         this.runningTotalRepository = runningTotalRepository;
         this.activityRepository = activityRepository;
-        this.eventPublisher = eventPublisher;
         this.sqlClient = sqlClient;
         this.configurationService = configurationService;
     }
@@ -126,24 +120,24 @@ public class SettlementIngestionService {
                             });
                 })
                 .compose(result -> {
-                    log.debug("Step 4: Generating events");
+                    log.debug("Step 4: Generate events and calculate running totals");
 
-                    // Step 4: Generate Events
-                    generateEvents(settlement, result.seqId, result.oldCounterparty);
+                    // Step 4 & 5: Generate events and directly calculate running totals
+                    // Build event list (1 or 2 events depending on counterparty change)
+                    List<SettlementEvent> events = generateEvents(settlement, result.seqId, result.oldCounterparty);
 
-                    // Step 5: Calculate Running Total for current group
-                    // If counterparty changed, also calculate for old group
-                    Future<Void> runningTotalFuture = calculateRunningTotal(settlement, result.seqId, connection);
+                    // Step 5: Loop through events and calculate running totals synchronously
+                    // This replaces event dispatch - all calculation happens within the transaction
+                    Future<Void> runningTotalFuture = Future.succeededFuture();
 
-                    if (result.oldCounterparty.isPresent() && !result.oldCounterparty.get().equals(settlement.getCounterpartyId())) {
-                        // Also calculate running total for old group
+                    for (SettlementEvent event : events) {
                         runningTotalFuture = runningTotalFuture.compose(v ->
                             calculateRunningTotalForGroup(
-                                    settlement.getPts(),
-                                    settlement.getProcessingEntity(),
-                                    result.oldCounterparty.get(),
-                                    settlement.getValueDate(),
-                                    result.seqId,
+                                    event.getPts(),
+                                    event.getProcessingEntity(),
+                                    event.getCounterpartyId(),
+                                    event.getValueDate(),
+                                    event.getRefId(),
                                     connection
                             )
                         );
@@ -183,8 +177,8 @@ public class SettlementIngestionService {
         );
     }
 
-    // Step 4: Generate Events
-    private void generateEvents(Settlement settlement, Long seqId, Optional<String> oldCounterparty) {
+    // Step 4: Generate Events (returns list for synchronous processing)
+    private List<SettlementEvent> generateEvents(Settlement settlement, Long seqId, Optional<String> oldCounterparty) {
         List<SettlementEvent> events = new ArrayList<>();
 
         // Default: 1 event for current group
@@ -211,23 +205,10 @@ public class SettlementIngestionService {
                     oldCounterparty.get(), settlement.getCounterpartyId());
         }
 
-        // Publish events (for async processing by event bus consumers)
-        eventPublisher.publishMultiple(events);
+        return events;
     }
 
-    // Step 5: Calculate Running Total
-    private Future<Void> calculateRunningTotal(Settlement settlement, Long seqId, SqlConnection connection) {
-        return calculateRunningTotalForGroup(
-                settlement.getPts(),
-                settlement.getProcessingEntity(),
-                settlement.getCounterpartyId(),
-                settlement.getValueDate(),
-                seqId,
-                connection
-        );
-    }
-
-    // Step 5 helper: Calculate running total for a specific group
+    // Step 5: Calculate running total for a specific group
     // OPTIMIZED: Uses single SQL to calculate and save running total
     private Future<Void> calculateRunningTotalForGroup(
             String pts,

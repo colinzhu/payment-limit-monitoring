@@ -75,7 +75,7 @@ public class RunningTotalProcessorVerticle extends AbstractVerticle {
                             event.getProcessingEntity(),
                             event.getCounterpartyId(),
                             event.getValueDate(),
-                            event.getSeqId(),
+                            event.getRefId(),
                             connection
                     ).onSuccess(v -> {
                         connection.close();
