@@ -128,7 +128,6 @@ public class HttpServerVerticle extends AbstractVerticle {
                 validator,
                 settlementRepository,
                 runningTotalRepository,
-                exchangeRateRepository,
                 activityRepository,
                 eventPublisher,
                 sqlClient,

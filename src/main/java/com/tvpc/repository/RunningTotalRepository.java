@@ -48,6 +48,26 @@ public interface RunningTotalRepository {
     );
 
     /**
+     * Calculate and save running total in a single SQL operation
+     * Combines query, calculation, and update into one database call
+     * @param pts Primary Trading System
+     * @param processingEntity Business unit
+     * @param counterpartyId Counterparty identifier
+     * @param valueDate Settlement value date
+     * @param maxSeqId Maximum sequence ID to include
+     * @param connection Database connection
+     * @return Future indicating completion
+     */
+    Future<Void> calculateAndSaveRunningTotal(
+            String pts,
+            String processingEntity,
+            String counterpartyId,
+            LocalDate valueDate,
+            Long maxSeqId,
+            SqlConnection connection
+    );
+
+    /**
      * Inner class for running total data
      */
     class RunningTotal {

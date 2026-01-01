@@ -8,7 +8,9 @@ import com.tvpc.dto.SettlementRequest;
 import com.tvpc.dto.ValidationResult;
 import com.tvpc.event.EventPublisher;
 import com.tvpc.event.SettlementEvent;
-import com.tvpc.repository.*;
+import com.tvpc.repository.SettlementRepository;
+import com.tvpc.repository.RunningTotalRepository;
+import com.tvpc.repository.ActivityRepository;
 import com.tvpc.validation.SettlementValidator;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
@@ -18,8 +20,6 @@ import io.vertx.sqlclient.SqlConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,7 +34,6 @@ public class SettlementIngestionService {
     private final SettlementValidator validator;
     private final SettlementRepository settlementRepository;
     private final RunningTotalRepository runningTotalRepository;
-    private final ExchangeRateRepository exchangeRateRepository;
     private final ActivityRepository activityRepository;
     private final EventPublisher eventPublisher;
     private final SqlClient sqlClient;
@@ -44,7 +43,6 @@ public class SettlementIngestionService {
             SettlementValidator validator,
             SettlementRepository settlementRepository,
             RunningTotalRepository runningTotalRepository,
-            ExchangeRateRepository exchangeRateRepository,
             ActivityRepository activityRepository,
             EventPublisher eventPublisher,
             SqlClient sqlClient,
@@ -53,7 +51,6 @@ public class SettlementIngestionService {
         this.validator = validator;
         this.settlementRepository = settlementRepository;
         this.runningTotalRepository = runningTotalRepository;
-        this.exchangeRateRepository = exchangeRateRepository;
         this.activityRepository = activityRepository;
         this.eventPublisher = eventPublisher;
         this.sqlClient = sqlClient;
@@ -231,6 +228,7 @@ public class SettlementIngestionService {
     }
 
     // Step 5 helper: Calculate running total for a specific group
+    // OPTIMIZED: Uses single SQL to calculate and save running total
     private Future<Void> calculateRunningTotalForGroup(
             String pts,
             String processingEntity,
@@ -239,84 +237,18 @@ public class SettlementIngestionService {
             Long seqId,
             SqlConnection connection
     ) {
-        // Find all settlements for the group (with filtering)
-        return settlementRepository.findByGroupWithFilters(
+        log.debug("Calculating running total for group (pts={}, pe={}, cp={}, vd={}, seqId={})",
+                pts, processingEntity, counterpartyId, valueDate, seqId);
+
+        // OPTIMIZED: Single database operation combines query, calculation, and update
+        return runningTotalRepository.calculateAndSaveRunningTotal(
                 pts,
                 processingEntity,
                 counterpartyId,
-                valueDate.toString(),
+                valueDate,
                 seqId,
                 connection
-        ).compose(settlements -> {
-            log.debug("Found {} settlements for group calculation (pts={}, pe={}, cp={}, vd={})",
-                    settlements.size(), pts, processingEntity, counterpartyId, valueDate);
-
-            if (settlements.isEmpty()) {
-                // No settlements - set total to 0
-                return runningTotalRepository.updateRunningTotal(
-                        pts,
-                        processingEntity,
-                        counterpartyId,
-                        valueDate,
-                        BigDecimal.ZERO,
-                        seqId,
-                        connection
-                );
-            }
-
-            // Process settlements recursively
-            return processSettlementsRecursively(settlements, 0, BigDecimal.ZERO, pts, processingEntity, counterpartyId, valueDate, seqId, connection);
-        });
-    }
-
-    private Future<Void> processSettlementsRecursively(
-            List<Settlement> settlements,
-            int index,
-            BigDecimal runningTotal,
-            String pts,
-            String processingEntity,
-            String counterpartyId,
-            LocalDate valueDate,
-            Long seqId,
-            SqlConnection connection
-    ) {
-        if (index >= settlements.size()) {
-            // All done, update running total
-            return runningTotalRepository.updateRunningTotal(
-                    pts,
-                    processingEntity,
-                    counterpartyId,
-                    valueDate,
-                    runningTotal,
-                    seqId,
-                    connection
-            );
-        }
-
-        Settlement s = settlements.get(index);
-
-        return exchangeRateRepository.getRate(s.getCurrency())
-                .compose(rateOpt -> {
-                    if (rateOpt.isEmpty()) {
-                        return Future.failedFuture("No exchange rate found for currency: " + s.getCurrency());
-                    }
-
-                    BigDecimal rate = rateOpt.get();
-                    BigDecimal usdAmount = s.getAmount().multiply(rate).setScale(2, RoundingMode.HALF_UP);
-
-                    // Continue with next settlement
-                    return processSettlementsRecursively(
-                            settlements,
-                            index + 1,
-                            runningTotal.add(usdAmount),
-                            pts,
-                            processingEntity,
-                            counterpartyId,
-                            valueDate,
-                            seqId,
-                            connection
-                    );
-                });
+        );
     }
 
     /**
