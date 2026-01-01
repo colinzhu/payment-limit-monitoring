@@ -213,19 +213,18 @@ public class JdbcSettlementRepository implements SettlementRepository {
     public Future<List<Settlement>> findByGroupWithFilters(String pts, String processingEntity, String counterpartyId, String valueDate, Long maxSeqId, SqlConnection connection) {
         Promise<List<Settlement>> promise = Promise.promise();
 
-        // Filter by PAY direction, non-CANCELLED status, and IS_OLD = 0 (latest versions only)
-        String sql = "SELECT s.* FROM SETTLEMENT s " +
-                "INNER JOIN (" +
-                "  SELECT SETTLEMENT_ID, MAX(SETTLEMENT_VERSION) as max_version " +
-                "  FROM SETTLEMENT " +
-                "  WHERE PTS = ? AND PROCESSING_ENTITY = ? AND COUNTERPARTY_ID = ? AND VALUE_DATE = ? " +
-                "  AND ID <= ? " +
-                "  AND (IS_OLD IS NULL OR IS_OLD = 0) " +
-                "  GROUP BY SETTLEMENT_ID" +
-                ") latest ON s.SETTLEMENT_ID = latest.SETTLEMENT_ID AND s.SETTLEMENT_VERSION = latest.max_version " +
-                "WHERE s.DIRECTION = 'PAY' AND s.BUSINESS_STATUS != 'CANCELLED' " +
-                "AND (s.IS_OLD IS NULL OR s.IS_OLD = 0) " +
-                "ORDER BY s.SETTLEMENT_ID";
+        // Use window function to find latest version per settlement ID, without relying on IS_OLD flag
+        // This correctly handles counterparty changes where old versions may have IS_OLD=1
+        String sql = "SELECT * FROM (" +
+                "  SELECT s.*, " +
+                "         MAX(s.SETTLEMENT_VERSION) OVER (PARTITION BY s.SETTLEMENT_ID, s.PTS, s.PROCESSING_ENTITY) as max_version " +
+                "  FROM SETTLEMENT s " +
+                "  WHERE s.PTS = ? AND s.PROCESSING_ENTITY = ? AND s.COUNTERPARTY_ID = ? AND s.VALUE_DATE = ? " +
+                "    AND s.ID <= ? " +
+                "    AND s.DIRECTION = 'PAY' AND s.BUSINESS_STATUS != 'CANCELLED' " +
+                ") ranked " +
+                "WHERE SETTLEMENT_VERSION = max_version " +
+                "ORDER BY SETTLEMENT_ID";
 
         Tuple params = Tuple.of(pts, processingEntity, counterpartyId, LocalDate.parse(valueDate), maxSeqId);
 
