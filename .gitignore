@@ -1,2 +1,271 @@
 .idea/
 bak/
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+*.log
+*.ctxt
+.mtj.tmp/
+
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+bin/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.trace.db
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# Build artifacts
+out/
+build/
+dist/
+
+# VS Code
+.vscode/
+
+# Eclipse
+.metadata/
+*.tmp
+*.bak
+*.swp
+
+# NetBeans
+nbproject/private/
+build/
+nbbuild/
+dist/
+nbdist/
+.nb-attributes/
+
+# JRebel
+rebel.xml
+
+# Spring Boot
+*.springbeans
+
+# Gradle
+.gradle/
+build/
+
+# Node (if any frontend)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Kubernetes
+*.yaml
+*.yml
+!src/main/resources/*.yml
+*.k8s
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+.terraformrc
+terraform.rc
+
+# Ansible
+*.retry
+
+# Vagrant
+Vagrantfile
+.vagrant/
+
+# Chef
+Berksfile
+Berksfile.lock
+*.cookbook
+Policyfile.lock.json
+
+# Packer
+*.packer
+*.tf
+
+# Consul
+consul/
+
+# Vault
+.vault/
+
+# SSL certificates
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
+
+# SSH keys
+id_rsa
+id_rsa.pub
+id_dsa
+id_dsa.pub
+
+# API keys and secrets
+.env
+.env.local
+.env.*.local
+secrets.yml
+config/secrets.yml
+
+# Coverage
+coverage/
+*.lcov
+.nyc_output/
+.coverage
+
+# Test
+test-results/
+test-output/
+test-reports/
+
+# Performance
+*.jfr
+*.hprof
+
+# Memory dumps
+*.hprof
+*.heap
+
+# Crash logs
+hs_err_pid*
+replay_pid*
+
+# Lock files
+package-lock.json
+yarn.lock
+Gemfile.lock
+Cargo.lock
+
+# Cache
+.cache/
+.npm/
+.yarn/
+.yarn-cache/
+.yarn-integrity
+.yarn.lock
+
+# Editor
+*~
+.*.swp
+.DS_Store
+.idea/
+*.swo
+*.swn
+*.swm
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.swp
+*.swo
+*.swn
+*.swm
+
+# OS generated files
+Desktop.ini
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Thumbs.db](https://github.com/github/gitignore/blob/main/community/Java/Thumbs.db)
+*.lnk
+
+# Mac
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Desktop.ini
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+Thumbs.db
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.trash-*
+.nfs*
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.swp
+*.swo
+*.swn
+*.swm
+
+# Logs
+*.log
+logs/

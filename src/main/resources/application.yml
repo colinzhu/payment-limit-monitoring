@@ -1,0 +1,55 @@
+# Payment Limit Monitoring System Configuration
+
+# HTTP Server Configuration
+http:
+  port: 8081
+  host: 0.0.0.0
+
+# Database Configuration
+database:
+  # Oracle Database 23c Free (local testing)
+  url: jdbc:oracle:thin:@//localhost:1521/FREEPDB1
+  driver_class: oracle.jdbc.OracleDriver
+  user: tvpc
+  password: tvpc123
+  max_pool_size: 20
+  connection_timeout: 5000
+
+# Application Settings
+app:
+  # MVP mode uses fixed 500M limit
+  # Advanced mode fetches counterparty-specific limits
+  mvp_mode: true
+
+  # Rule refresh interval (milliseconds)
+  rule_refresh_interval: 300000  # 5 minutes
+
+  # Exchange rate refresh interval (milliseconds)
+  rate_refresh_interval: 86400000  # 24 hours
+
+# Performance Settings
+performance:
+  # Maximum settlements per batch
+  max_batch_size: 1000
+
+  # Timeout for running total calculation (seconds)
+  calculation_timeout: 10
+
+  # Status availability target (seconds)
+  status_target_time: 30
+
+# Notification Settings
+notification:
+  # External system endpoint
+  endpoint: http://external-system.example.com/notifications
+
+  # Retry settings
+  max_retries: 10
+  initial_delay: 60000  # 1 minute
+  backoff_multiplier: 2.0
+  max_delay: 86400000  # 24 hours
+
+# Logging Configuration
+logging:
+  level: INFO
+  pattern: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

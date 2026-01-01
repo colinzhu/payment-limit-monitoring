@@ -1,8 +1,8 @@
 # Payment Limit Monitoring System - Architecture Design
 
 ## Technology Stack
-- **Framework**: Vert.x
-- **Language**: Java
+- **Framework**: Vert.x 4.5.23
+- **Language**: Java 21
 - **Database**: Oracle Database
 - **Messaging**: No MQ (event-driven via Vert.x event bus)
 
@@ -25,7 +25,7 @@ The system uses an **auto-incrementing sequence ID** as the foundation for consi
 
 ### SETTLEMENT Table
 Stores the **latest version** of each settlement:
-- `SEQ_ID` - Auto-incrementing primary key
+- `SEQ_ID` - Auto-incrementing primary key (make sure the sequence is set to "ORDER" when creating the table, Specify ORDER to guarantee that sequence numbers are generated in order of request.)
 - `SETTLEMENT_ID` - Business settlement identifier
 - `SETTLEMENT_VERSION` - Version number (timestamp in long format)
 - `PTS` - Primary Trading System source
@@ -107,6 +107,7 @@ When a settlement arrives:
 1. Insert to `SETTLEMENT` table
 2. Get the auto-generated sequence ID
 3. This ID becomes the `SEQ_ID` for event generation
+**Note**: the transaction should only contains saving the settlement 
 
 ### Step 2: Mark `IS_OLD` for old versions
 **Mark Old**:
@@ -145,7 +146,7 @@ Calculate the running total for the group in the event
   - `PTS`, `PROCESSING_ENTITY`, `COUNTERPARTY_ID`, `VALUE_DATE` = values from event
   - `BUSINESS_STATUS` values from the rules from external system, e.g. in PENDING, VERIFIED, or CANCELLED
   - `DIRECTION` values from the rules from external system, e.g. = PAY
-  - `SETTLEMENT_VERSION` = MAX(SETTLEMENT_VERSION) of current `SETTLEMENT_ID` -- to filter out `COUNTERPARTY_ID` changed record
+  - `SETTLEMENT_VERSION` = MAX(SETTLEMENT_VERSION) of current `SETTLEMENT_ID`,`PTS`,`PROCESSING_ENTITY` -- to filter out `COUNTERPARTY_ID` changed record
   - `ID` <= sequence ID of current settlement
 - **Calculate running total**:
   - JOIN with `EXCHANGE_RATE` to convert to USD
