@@ -5,6 +5,9 @@
 - **Language**: Java 21
 - **Database**: Oracle Database
 - **Messaging**: No MQ (event-driven via Vert.x event bus)
+- **Libraries**:
+  - logback
+  - lombok
 
 ## Architecture
 - **Critical**: Use Hexagonal Architecture
@@ -40,6 +43,14 @@ Stores the **latest version** of each settlement:
 - `IS_OLD` - True if this is an old version
 - `CREATE_TIME` - Audit timestamp
 - `UPDATE_TIME` - Audit timestamp
+- Indexes:
+  -- For the correlated subquery (most critical)
+  CREATE INDEX idx_settlement_pk_lookup
+  ON SETTLEMENT (SETTLEMENT_ID, PTS, PROCESSING_ENTITY, SETTLEMENT_VERSION DESC);
+
+  -- For the outer query
+  CREATE INDEX idx_settlement_group_filter
+  ON SETTLEMENT (PTS, PROCESSING_ENTITY, COUNTERPARTY_ID, VALUE_DATE, ID);
 
 ### SETTLEMENT_HIST Table
 Stores **old versions** of settlements (non-latest):
