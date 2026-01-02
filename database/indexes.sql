@@ -14,6 +14,7 @@ ON SETTLEMENT (SETTLEMENT_ID, PTS, PROCESSING_ENTITY, SETTLEMENT_VERSION DESC);
 -- ============================================
 -- Optimizes the main WHERE clause: PTS, PROCESSING_ENTITY, COUNTERPARTY_ID, VALUE_DATE, ID
 CREATE INDEX idx_settlement_group_filter
+
 ON SETTLEMENT (PTS, PROCESSING_ENTITY, COUNTERPARTY_ID, VALUE_DATE, ID);
 
 -- ============================================

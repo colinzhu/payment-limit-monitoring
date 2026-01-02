@@ -100,7 +100,15 @@ Step 4: Generate Events (EventPublisher) - 1 or 2 events
 Step 5: Calculate Running Total (SettlementIngestionService.calculateRunningTotal)
 ```
 
-**Key**: Step 5 is executed **synchronously** within the HTTP request, not deferred. This ensures status availability within 30 seconds.
+**Key**: All 5 steps are executed **synchronously** within the HTTP request. So that it doesn't need extra time on event dispatching.
+
+**Duplicate Handling**: The database has a unique constraint on `(SETTLEMENT_ID, PTS, PROCESSING_ENTITY, SETTLEMENT_VERSION)`. If a duplicate is inserted:
+- The database throws a constraint violation exception
+- The service catches it and queries for the existing settlement's ID
+- Uses that ID as REF_ID for the rest of the flow
+- Returns HTTP 200 with the existing sequence ID
+- This makes the operation idempotent
+- This allows settlement resend from client can trigger all the steps in case of a failure
 
 ### Event System
 
@@ -117,6 +125,7 @@ Step 5: Calculate Running Total (SettlementIngestionService.calculateRunningTota
    - Group fields: `PTS`, `PROCESSING_ENTITY`, `COUNTERPARTY_ID`, `VALUE_DATE`
    - Transaction: `CURRENCY`, `AMOUNT`, `DIRECTION`, `BUSINESS_STATUS`, `GROSS_NET`
    - Version flag: `IS_OLD`
+   - **Unique Constraint**: `(SETTLEMENT_ID, PTS, PROCESSING_ENTITY, SETTLEMENT_VERSION)` - prevents duplicates
 
 2. **SETTLEMENT_HIST** - Archived old versions
 3. **EXCHANGE_RATE** - Latest currency rates

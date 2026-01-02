@@ -37,29 +37,13 @@ public class JdbcSettlementRepository implements SettlementRepository {
         // This ensures we have a valid ID before the insert
         connection.query("SELECT SETTLEMENT_SEQ.NEXTVAL AS ID FROM DUAL").execute()
                 .compose(result -> {
-                    System.out.println("DEBUG save: NEXTVAL result size = " + result.size());
-
                     if (result.size() == 0) {
-                        System.err.println("DEBUG save: No rows returned from NEXTVAL query");
                         promise.fail("No sequence value returned");
                         return Future.failedFuture("No sequence value");
                     }
 
                     var row = result.iterator().next();
-                    System.out.println("DEBUG save: Row = " + row);
-
-                    // Try different ways to get the value
-                    Object rawValue = row.getValue(0);
-                    System.out.println("DEBUG save: Raw value (index 0) = " + rawValue + " (type: " + (rawValue != null ? rawValue.getClass().getName() : "null") + ")");
-
-                    Object rawValueNamed = row.getValue("ID");
-                    System.out.println("DEBUG save: Raw value (named 'ID') = " + rawValueNamed + " (type: " + (rawValueNamed != null ? rawValueNamed.getClass().getName() : "null") + ")");
-
                     Long id = row.getLong(0);
-                    System.out.println("DEBUG save: getLong(0) = " + id);
-
-                    Long idNamed = row.getLong("ID");
-                    System.out.println("DEBUG save: getLong('ID') = " + idNamed);
 
                     // Now insert with the explicit ID
                     String sql = "INSERT INTO SETTLEMENT (" +
@@ -87,18 +71,65 @@ public class JdbcSettlementRepository implements SettlementRepository {
                             LocalDateTime.now()
                     );
 
-                    System.out.println("DEBUG save: Inserting with ID = " + id);
-                    return connection.preparedQuery(sql).execute(params).map(id);
+                    return connection.preparedQuery(sql).execute(params)
+                            .map(id)
+                            .recover(throwable -> {
+                                // Check if this is a duplicate constraint violation
+                                // Oracle: ORA-00001, H2: 23505
+                                String errorMsg = throwable.getMessage();
+                                boolean isDuplicate = errorMsg != null &&
+                                    (errorMsg.contains("ORA-00001") ||
+                                     errorMsg.contains("23505") ||
+                                     errorMsg.contains("unique constraint") ||
+                                     errorMsg.contains("UniqueConstraintViolation"));
+
+                                if (isDuplicate) {
+                                    // Query for the existing settlement's ID
+                                    System.out.println("DEBUG save: Duplicate detected, querying for existing ID");
+                                    return findExistingSettlementId(
+                                        settlement.getSettlementId(),
+                                        settlement.getPts(),
+                                        settlement.getProcessingEntity(),
+                                        settlement.getSettlementVersion(),
+                                        connection
+                                    );
+                                }
+                                // Re-throw if it's not a duplicate error
+                                return Future.failedFuture(throwable);
+                            });
                 })
                 .onSuccess(id -> {
-                    System.out.println("DEBUG save: Insert succeeded, ID = " + id);
                     settlement.setId(id);
                     promise.complete(id);
                 })
-                .onFailure(error -> {
-                    System.err.println("DEBUG save: Failed - " + error.getMessage());
-                    promise.fail(error);
-                });
+                .onFailure(promise::fail);
+
+        return promise.future();
+    }
+
+    /**
+     * Find the ID of an existing settlement with the same unique key
+     */
+    private Future<Long> findExistingSettlementId(String settlementId, String pts, String processingEntity, Long settlementVersion, SqlConnection connection) {
+        Promise<Long> promise = Promise.promise();
+
+        String sql = "SELECT ID FROM SETTLEMENT " +
+                "WHERE SETTLEMENT_ID = ? AND PTS = ? AND PROCESSING_ENTITY = ? AND SETTLEMENT_VERSION = ?";
+
+        Tuple params = Tuple.of(settlementId, pts, processingEntity, settlementVersion);
+
+        connection.preparedQuery(sql)
+                .execute(params)
+                .onSuccess(result -> {
+                    if (result.size() > 0) {
+                        Long id = result.iterator().next().getLong("ID");
+                        promise.complete(id);
+                    } else {
+                        // This shouldn't happen if we caught a duplicate constraint violation
+                        promise.fail("Duplicate detected but no existing record found");
+                    }
+                })
+                .onFailure(promise::fail);
 
         return promise.future();
     }
