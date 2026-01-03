@@ -66,8 +66,7 @@ public class Main {
     private static JsonObject loadConfig() {
         try (InputStream is = Main.class.getClassLoader().getResourceAsStream("application.yml")) {
             if (is == null) {
-                log.warn("application.yml not found, using Oracle defaults");
-                return getDefaultOracleConfig();
+                throw new RuntimeException("application.yml not found in classpath");
             }
 
             // Read the YAML file
@@ -82,7 +81,7 @@ public class Main {
                 config.put("http.port", 8081);
             }
 
-            // Parse Database config
+            // Parse Database config - Oracle only
             JsonObject dbConfig = new JsonObject();
             if (yaml.contains("jdbc:oracle")) {
                 dbConfig.put("url", "jdbc:oracle:thin:@//localhost:1521/FREEPDB1");
@@ -91,12 +90,7 @@ public class Main {
                 dbConfig.put("password", "tvpc123");
                 dbConfig.put("max_pool_size", 20);
             } else {
-                // Fallback to H2
-                dbConfig.put("url", "jdbc:h2:mem:test;DB_CLOSE_DELAY=-1");
-                dbConfig.put("driver_class", "org.h2.Driver");
-                dbConfig.put("user", "sa");
-                dbConfig.put("password", "");
-                dbConfig.put("max_pool_size", 10);
+                throw new RuntimeException("application.yml must contain Oracle JDBC configuration");
             }
 
             config.put("database", dbConfig);
@@ -104,21 +98,9 @@ public class Main {
             return config;
 
         } catch (Exception e) {
-            log.warn("Failed to load application.yml, using Oracle defaults: {}", e.getMessage());
-            return getDefaultOracleConfig();
+            log.error("Failed to load application.yml: {}", e.getMessage());
+            throw new RuntimeException("Configuration error: application.yml required", e);
         }
-    }
-
-    private static JsonObject getDefaultOracleConfig() {
-        return new JsonObject()
-                .put("http.port", 8081)
-                .put("database", new JsonObject()
-                        .put("url", "jdbc:oracle:thin:@//localhost:1521/FREEPDB1")
-                        .put("driver_class", "oracle.jdbc.OracleDriver")
-                        .put("user", "tvpc")
-                        .put("password", "tvpc123")
-                        .put("max_pool_size", 20)
-                );
     }
 
     /**
