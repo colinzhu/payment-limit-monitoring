@@ -12,12 +12,154 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 - **Framework**: Vert.x 4.5.23 (async, event-driven)
 - **Language**: Java 21
-- **Database**: Oracle Database (production), H2 (development/testing)
+- **Database**: Oracle Database (production, development, testing)
 - **Build Tool**: Maven
 - **Testing**: JUnit 5, Mockito, Vert.x Unit
 - **Architecture**: Hexagonal Architecture with Event-Driven design
 
-## Project Structure
+## Common Bash Commands
+
+```bash
+# Build and test
+mvn clean compile
+mvn test
+mvn clean package
+
+# Run application
+mvn exec:java -Dexec.mainClass="com.tvpc.Main"
+
+# Run specific tests
+mvn test -Dtest=SettlementValidatorTest
+mvn test -Dtest=SettlementValidatorTest#testValidSettlement
+
+# Check Java/Maven versions
+java -version
+mvn -version
+
+# Test API endpoints
+curl http://localhost:8081/health
+curl -X POST http://localhost:8081/api/settlements -H "Content-Type: application/json" -d @test-settlement.json
+
+# View database state (requires Oracle running)
+podman exec -it oracle-db sqlplus tvpc/tvpc123@//localhost:1521/FREEPDB1
+```
+
+## Code Style Guidelines
+
+- **Java 21**: Use modern Java features where appropriate
+- **Vert.x patterns**: Use async handlers, avoid blocking operations
+- **Hexagonal architecture**: Keep domain pure, dependencies point inward
+- **Transaction safety**: All critical operations must be in transactions
+- **Error handling**: Use proper exception handling, return meaningful error messages
+- **Logging**: Use SLF4J with Logback, follow existing log patterns
+- **Naming**: Follow existing naming conventions in the codebase
+- **Comments**: Add comments for complex business logic, especially around the 5-step ingestion flow
+
+## Testing Instructions
+
+**Always run tests before committing:**
+```bash
+mvn clean test
+```
+
+**Test structure:**
+- Unit tests in `src/test/java/com/tvpc/`
+- Validation tests: `SettlementValidatorTest.java` (11 test cases)
+- Domain tests: `SettlementTest.java`, `EnumTest.java`
+- Service tests: Test the 5-step ingestion flow
+
+**When making changes:**
+1. Run all tests first to ensure baseline
+2. Add tests for new functionality
+3. Run tests again to verify
+4. Check for any integration issues
+
+## Workflow Tips
+
+### 1. Understand the 5-Step Ingestion Flow
+Before modifying `SettlementIngestionService.java`, understand:
+- Step 0: Validation (SettlementValidator)
+- Step 1: Save → Get REF_ID
+- Step 2: Mark old versions
+- Step 3: Detect counterparty changes
+- Step 4: Generate events (1 or 2)
+- Step 5: Calculate running totals
+
+**All steps execute in a single transaction.**
+
+### 2. Database Operations
+- **SETTLEMENT table**: Latest versions only, uses `IS_OLD` flag
+- **Unique constraint**: `(SETTLEMENT_ID, PTS, PROCESSING_ENTITY, SETTLEMENT_VERSION)` prevents duplicates
+- **Sequence ID (ID column)**: Auto-incrementing, becomes REF_ID, critical for ordering
+- **RUNNING_TOTAL**: Aggregated by group, updated via MERGE
+
+### 3. Event System
+- Events published to Vert.x event bus
+- `RunningTotalProcessorVerticle` consumes events
+- Events contain: `PTS`, `PROCESSING_ENTITY`, `COUNTERPARTY_ID`, `VALUE_DATE`, `REF_ID`
+- Counterparty changes trigger 2 events (old + new)
+
+### 4. Common Pitfalls to Avoid
+- ❌ Don't store status fields - compute on-demand
+- ❌ Don't use incremental updates - always complete recalculation
+- ❌ Don't skip version history - audit requirement
+- ❌ Don't process events concurrently - single-threaded processor
+- ❌ Don't ignore counterparty changes - must trigger dual events
+
+### 5. Debugging
+- Enable debug logging in `src/main/resources/logback.xml`
+- Check database state with SQL queries
+- Use curl to test API endpoints
+- Vert.x logs show event bus activity
+
+## Key Files to Reference
+
+**Core implementation:**
+- `src/main/java/com/tvpc/service/SettlementIngestionService.java` - Main orchestrator
+- `src/main/java/com/tvpc/repository/impl/JdbcSettlementRepository.java` - DB operations
+- `src/main/java/com/tvpc/processor/RunningTotalProcessorVerticle.java` - Event consumer
+- `src/main/java/com/tvpc/validation/SettlementValidator.java` - Input validation
+
+**Configuration:**
+- `src/main/resources/application.yml` - App config (HTTP port, DB connection)
+- `src/main/resources/db/schema.sql` - Oracle DDL for 6 tables
+- `src/main/resources/logback.xml` - Logging config
+
+**Documentation:**
+- `.kiro/specs/payment-limit-monitoring/requirements.md` - Requirements
+- `.kiro/specs/payment-limit-monitoring/tech-design.md` - Technical design
+- `IMPLEMENTATION.md` - Implementation summary
+- `SUMMARY.md` - Project summary
+
+## Important Notes
+
+1. **This is a working implementation** - Can be compiled and run immediately
+2. **Oracle database required** - Configure in `application.yml`
+3. **Event-driven architecture** - Vert.x event bus for async processing
+4. **Single-threaded processor** - Critical for consistency
+5. **Complete recalculation** - No incremental updates
+6. **Transaction safety** - All critical operations atomic
+
+## Proxy Configuration
+
+If you cannot connect to external sites, use the proxy:
+```bash
+source set-proxy.sh  # Sets HTTP_PROXY and HTTPS_PROXY to 127.0.0.1:4080
+```
+
+## Quick Start
+
+1. Check environment: `java -version && mvn -version`
+2. Build: `mvn clean compile`
+3. Run tests: `mvn test`
+4. Set up Oracle database (run schema.sql)
+5. Configure: `src/main/resources/application.yml`
+6. Run: `mvn exec:java -Dexec.mainClass="com.tvpc.Main"`
+7. Test: `curl http://localhost:8081/health`
+
+## Contact/Support
+
+This is a Vert.x-based Java application following hexagonal architecture principles. All critical operations are transactional and event-driven.
 
 ```
 src/main/java/com/tvpc/
@@ -445,7 +587,7 @@ curl http://localhost:8081/health
 1. **This is a working implementation** - Not just design documents
 2. **Phase 1 complete** - Settlement ingestion fully functional
 3. **Ready for deployment** - Can be compiled and run immediately
-4. **Oracle/H2 support** - Switch via configuration
+4. **Oracle** - Switch via configuration
 5. **Event-driven architecture** - Vert.x event bus for async processing
 6. **Single-threaded processor** - Critical for consistency
 7. **Complete recalculation** - No incremental updates
@@ -465,7 +607,7 @@ curl http://localhost:8081/health
 - [ ] Check Maven is installed: `mvn -version`
 - [ ] Run: `mvn clean compile`
 - [ ] Run tests: `mvn test`
-- [ ] Set up database (Oracle or use H2 for dev)
+- [ ] Set up database (Oracle)
 - [ ] Configure: `src/main/resources/application.yml`
 - [ ] Run: `mvn exec:java -Dexec.mainClass="com.tvpc.Main"`
 - [ ] Test: `curl http://localhost:8081/health`
@@ -473,3 +615,8 @@ curl http://localhost:8081/health
 ## Contact/Support
 
 This is a Vert.x-based Java application following hexagonal architecture principles. All critical operations are transactional and event-driven.
+
+## Tips:
+- use 127.0.0.1:4080 for HTTP and HTTPS proxy if not able to connect to any web site
+- learn Vert.x by source code and document from maven repository, use maven to download the source and document if they are not available
+- learn Vert.x from its website https://vertx.io/
