@@ -1,4 +1,4 @@
-package com.tvpc.infrastructure.config;
+package com.tvpc;
 
 import com.tvpc.domain.event.SettlementEvent;
 import io.vertx.core.buffer.Buffer;

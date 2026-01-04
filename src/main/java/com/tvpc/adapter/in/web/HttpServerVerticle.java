@@ -1,11 +1,10 @@
-package com.tvpc.infrastructure.config;
+package com.tvpc.adapter.in.web;
 
-import com.tvpc.adapter.in.web.SettlementIngestionHandler;
-import com.tvpc.adapter.in.web.SettlementRouter;
+import com.tvpc.adapter.in.web.ingestion.SettlementIngestionHandler;
 import com.tvpc.adapter.out.persistence.*;
 import com.tvpc.application.port.in.SettlementIngestionUseCase;
 import com.tvpc.application.port.out.*;
-import com.tvpc.application.service.SettlementIngestionService;
+import com.tvpc.application.service.SettlementIngestionUseCaseImpl;
 import com.tvpc.application.service.SettlementValidator;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Future;
@@ -88,20 +87,20 @@ public class HttpServerVerticle extends AbstractVerticle {
 
     private void initializeServices() {
         // Output ports (adapters)
-        SettlementPersistencePort settlementPersistencePort = new JdbcSettlementPersistenceAdapter(jdbcPool);
-        RunningTotalPersistencePort runningTotalPersistencePort = new JdbcRunningTotalPersistenceAdapter(jdbcPool);
-        ActivityPersistencePort activityPersistencePort = new JdbcActivityPersistenceAdapter(jdbcPool);
-        ExchangeRatePersistencePort exchangeRatePersistencePort = new JdbcExchangeRatePersistenceAdapter(jdbcPool);
-        ConfigurationPort configurationPort = new InMemoryConfigurationAdapter();
+        SettlementRepository settlementRepository = new JdbcSettlementPersistenceAdapter(jdbcPool);
+        RunningTotalRepository runningTotalRepository = new JdbcRunningTotalPersistenceAdapter(jdbcPool);
+        ActivityRepository activityRepository = new JdbcActivityPersistenceAdapter(jdbcPool);
+        ExchangeRateRepository exchangeRateRepository = new JdbcExchangeRatePersistenceAdapter(jdbcPool);
+        ConfigurationRepository configurationRepository = new InMemoryConfigurationAdapter();
 
         // Application services
         SettlementValidator validator = new SettlementValidator();
-        SettlementIngestionUseCase ingestionUseCase = new SettlementIngestionService(
+        SettlementIngestionUseCase ingestionUseCase = new SettlementIngestionUseCaseImpl(
                 validator,
-                settlementPersistencePort,
-                runningTotalPersistencePort,
+                settlementRepository,
+                runningTotalRepository,
                 jdbcPool,
-                configurationPort
+                configurationRepository
         );
 
         // Input adapters (handlers)
@@ -118,8 +117,8 @@ public class HttpServerVerticle extends AbstractVerticle {
         router.route().handler(BodyHandler.create());
 
         // Setup routes
-        SettlementRouter settlementRouter = new SettlementRouter(router, ingestionHandler);
-        settlementRouter.setupRoutes();
+        WebRouter webRouter = new WebRouter(router, ingestionHandler);
+        webRouter.setupRoutes();
 
         // Default route - 404
         router.route().handler(ctx -> {

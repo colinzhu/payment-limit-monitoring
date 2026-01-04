@@ -1,4 +1,4 @@
-package com.tvpc.adapter.in.web.dto;
+package com.tvpc.adapter.in.web.ingestion;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -8,7 +8,7 @@ import java.math.BigDecimal;
 /**
  * DTO for incoming settlement data from external trading systems
  */
-public record SettlementRequest(
+public record SettlementIngestionRequest(
         String settlementId,
         Long settlementVersion,
         String pts,
@@ -22,7 +22,7 @@ public record SettlementRequest(
         String settlementType
 ) {
     @JsonCreator
-    public SettlementRequest(
+    public SettlementIngestionRequest(
             @JsonProperty("settlementId") String settlementId,
             @JsonProperty("settlementVersion") Long settlementVersion,
             @JsonProperty("pts") String pts,

@@ -1,8 +1,7 @@
-package com.tvpc.infrastructure;
+package com.tvpc;
 
+import com.tvpc.adapter.in.web.HttpServerVerticle;
 import com.tvpc.domain.event.SettlementEvent;
-import com.tvpc.infrastructure.config.HttpServerVerticle;
-import com.tvpc.infrastructure.config.SettlementEventCodec;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.json.JsonObject;

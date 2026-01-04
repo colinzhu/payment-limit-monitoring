@@ -1,7 +1,5 @@
-package com.tvpc.adapter.in.web;
+package com.tvpc.adapter.in.web.ingestion;
 
-import com.tvpc.adapter.in.web.dto.SettlementRequest;
-import com.tvpc.adapter.in.web.dto.SettlementResponse;
 import com.tvpc.application.port.in.SettlementIngestionUseCase;
 import com.tvpc.application.port.in.SettlementIngestionUseCase.SettlementIngestionCommand;
 import io.vertx.core.Handler;
@@ -35,7 +33,7 @@ public class SettlementIngestionHandler implements Handler<RoutingContext> {
         }
 
         try {
-            SettlementRequest request = requestBody.mapTo(SettlementRequest.class);
+            SettlementIngestionRequest request = requestBody.mapTo(SettlementIngestionRequest.class);
             log.info("Received settlement ingestion request: {}", request.settlementId());
 
             // Convert to command
@@ -56,7 +54,7 @@ public class SettlementIngestionHandler implements Handler<RoutingContext> {
             // Process the settlement
             ingestionUseCase.processSettlement(command)
                     .onSuccess(seqId -> {
-                        SettlementResponse response = SettlementResponse.success(
+                        SettlementIngestionResponse response = SettlementIngestionResponse.success(
                                 "Settlement processed successfully",
                                 seqId
                         );
@@ -80,7 +78,7 @@ public class SettlementIngestionHandler implements Handler<RoutingContext> {
                             statusCode = 400;
                         }
 
-                        SettlementResponse response = SettlementResponse.error(message);
+                        SettlementIngestionResponse response = SettlementIngestionResponse.error(message);
                         context.response()
                                 .setStatusCode(statusCode)
                                 .putHeader("Content-Type", "application/json")
@@ -94,7 +92,7 @@ public class SettlementIngestionHandler implements Handler<RoutingContext> {
     }
 
     private void sendError(RoutingContext context, int statusCode, String message) {
-        SettlementResponse response = SettlementResponse.error(message);
+        SettlementIngestionResponse response = SettlementIngestionResponse.error(message);
         context.response()
                 .setStatusCode(statusCode)
                 .putHeader("Content-Type", "application/json")

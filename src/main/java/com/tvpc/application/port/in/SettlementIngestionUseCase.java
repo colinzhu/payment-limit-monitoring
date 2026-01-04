@@ -1,6 +1,5 @@
 package com.tvpc.application.port.in;
 
-import com.tvpc.domain.model.Settlement;
 import io.vertx.core.Future;
 
 /**

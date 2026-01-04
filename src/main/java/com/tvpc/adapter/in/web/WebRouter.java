@@ -1,5 +1,6 @@
 package com.tvpc.adapter.in.web;
 
+import com.tvpc.adapter.in.web.ingestion.SettlementIngestionHandler;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.handler.BodyHandler;
 import lombok.RequiredArgsConstructor;
@@ -8,7 +9,7 @@ import lombok.RequiredArgsConstructor;
  * Router configuration for settlement endpoints
  */
 @RequiredArgsConstructor
-public class SettlementRouter {
+public class WebRouter {
 
     private final Router router;
     private final SettlementIngestionHandler settlementIngestionHandler;

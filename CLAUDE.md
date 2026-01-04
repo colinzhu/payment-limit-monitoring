@@ -80,7 +80,7 @@ mvn test
 mvn clean package
 
 # Run application
-mvn exec:java -Dexec.mainClass="com.tvpc.infrastructure.Main"
+mvn exec:java -Dexec.mainClass="com.tvpc.Main"
 
 # Run specific tests (examples)
 mvn test -Dtest=SettlementValidatorTest

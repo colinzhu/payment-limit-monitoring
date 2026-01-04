@@ -1,9 +1,9 @@
 package com.tvpc.application.service;
 
 import com.tvpc.application.port.in.SettlementIngestionUseCase;
-import com.tvpc.application.port.out.ConfigurationPort;
-import com.tvpc.application.port.out.RunningTotalPersistencePort;
-import com.tvpc.application.port.out.SettlementPersistencePort;
+import com.tvpc.application.port.out.ConfigurationRepository;
+import com.tvpc.application.port.out.RunningTotalRepository;
+import com.tvpc.application.port.out.SettlementRepository;
 import com.tvpc.domain.event.SettlementEvent;
 import com.tvpc.domain.model.BusinessStatus;
 import com.tvpc.domain.model.Settlement;
@@ -26,13 +26,13 @@ import java.util.Optional;
  */
 @Slf4j
 @RequiredArgsConstructor
-public class SettlementIngestionService implements SettlementIngestionUseCase {
+public class SettlementIngestionUseCaseImpl implements SettlementIngestionUseCase {
 
     private final SettlementValidator validator;
-    private final SettlementPersistencePort settlementPersistencePort;
-    private final RunningTotalPersistencePort runningTotalPersistencePort;
+    private final SettlementRepository settlementRepository;
+    private final RunningTotalRepository runningTotalRepository;
     private final JDBCPool jdbcPool;
-    private final ConfigurationPort configurationPort;
+    private final ConfigurationRepository configurationRepository;
 
     @Override
     public Future<Long> processSettlement(SettlementIngestionCommand command) {
@@ -101,14 +101,14 @@ public class SettlementIngestionService implements SettlementIngestionUseCase {
 
     // Step 1: Save Settlement
     private Future<Long> saveSettlement(Settlement settlement, SqlConnection connection) {
-        return settlementPersistencePort.save(settlement, connection)
+        return settlementRepository.save(settlement, connection)
                 .onSuccess(seqId -> log.debug("saveSettlement returned seqId: {}", seqId))
                 .onFailure(error -> log.error("saveSettlement failed: {}", error.getMessage()));
     }
 
     // Step 2: Mark Old Versions
     private Future<Void> markOldVersions(Settlement settlement, SqlConnection connection) {
-        return settlementPersistencePort.markOldVersions(
+        return settlementRepository.markOldVersions(
                 settlement.getSettlementId(),
                 settlement.getPts(),
                 settlement.getProcessingEntity(),
@@ -118,7 +118,7 @@ public class SettlementIngestionService implements SettlementIngestionUseCase {
 
     // Step 3: Detect Counterparty Changes
     private Future<Optional<String>> detectCounterpartyChange(Settlement settlement, Long seqId, SqlConnection connection) {
-        return settlementPersistencePort.findPreviousCounterparty(
+        return settlementRepository.findPreviousCounterparty(
                 settlement.getSettlementId(),
                 settlement.getPts(),
                 settlement.getProcessingEntity(),
@@ -170,7 +170,7 @@ public class SettlementIngestionService implements SettlementIngestionUseCase {
         log.debug("Calculating running total for group (pts={}, pe={}, cp={}, vd={}, seqId={})",
                 pts, processingEntity, counterpartyId, valueDate, seqId);
 
-        return runningTotalPersistencePort.calculateAndSaveRunningTotal(
+        return runningTotalRepository.calculateAndSaveRunningTotal(
                 pts,
                 processingEntity,
                 counterpartyId,
