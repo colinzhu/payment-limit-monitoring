@@ -5,9 +5,8 @@ import lombok.Value;
 import java.time.LocalDate;
 
 /**
- * Settlement Event - Domain event for running total recalculation
+ * Domain event for settlement processing
  * Triggered when a settlement needs running total recalculation
- * Immutable - Value Object
  */
 @Value
 public class SettlementEvent {
