@@ -1,9 +1,13 @@
 package com.tvpc.adapter.in.web;
 
 import com.tvpc.adapter.in.web.ingestion.SettlementIngestionHandler;
+import com.tvpc.adapter.out.http.CalculationRuleHttpAdapter;
+import com.tvpc.adapter.out.http.ExchangeRateHttpAdapter;
 import com.tvpc.adapter.out.persistence.*;
+import com.tvpc.application.port.in.ExchangeRateRefreshUseCase;
 import com.tvpc.application.port.in.SettlementIngestionUseCase;
 import com.tvpc.application.port.out.*;
+import com.tvpc.application.service.ExchangeRateRefreshService;
 import com.tvpc.application.service.SettlementIngestionUseCaseImpl;
 import com.tvpc.application.service.SettlementValidator;
 import io.vertx.core.AbstractVerticle;
@@ -27,7 +31,8 @@ public class HttpServerVerticle extends AbstractVerticle {
 
     private JDBCPool jdbcPool;
     private SettlementIngestionHandler ingestionHandler;
-    private com.tvpc.adapter.out.persistence.InMemoryCalculationRuleAdapter calculationRuleRepository;
+    private InMemoryCalculationRuleAdapter calculationRuleRepository;
+    private ExchangeRateRefreshUseCase exchangeRateRefreshUseCase;
 
     @Override
     public void start(Promise<Void> startPromise) {
@@ -54,6 +59,9 @@ public class HttpServerVerticle extends AbstractVerticle {
 
     @Override
     public void stop() {
+        if (exchangeRateRefreshUseCase != null) {
+            exchangeRateRefreshUseCase.stopPeriodicRefresh();
+        }
         if (jdbcPool != null) {
             jdbcPool.close();
         }
@@ -97,11 +105,13 @@ public class HttpServerVerticle extends AbstractVerticle {
         ExchangeRateRepository exchangeRateRepository = new JdbcExchangeRatePersistenceAdapter(jdbcPool);
         ConfigurationRepository configurationRepository = new InMemoryConfigurationAdapter();
         
-        // HTTP adapter for fetching calculation rules
-        com.tvpc.adapter.out.http.CalculationRuleHttpAdapter ruleHttpAdapter = new com.tvpc.adapter.out.http.CalculationRuleHttpAdapter();
-        calculationRuleRepository = new com.tvpc.adapter.out.persistence.InMemoryCalculationRuleAdapter(vertx, ruleHttpAdapter);
+        // HTTP adapters (output ports)
+        CalculationRuleHttpAdapter ruleHttpAdapter = new CalculationRuleHttpAdapter();
+        ExchangeRateProvider exchangeRateProvider = new ExchangeRateHttpAdapter();
+        
+        calculationRuleRepository = new InMemoryCalculationRuleAdapter(vertx, ruleHttpAdapter);
 
-        // Application services
+        // Application services (use cases)
         SettlementValidator validator = new SettlementValidator();
         SettlementIngestionUseCase ingestionUseCase = new SettlementIngestionUseCaseImpl(
                 validator,
@@ -110,17 +120,30 @@ public class HttpServerVerticle extends AbstractVerticle {
                 jdbcPool,
                 calculationRuleRepository
         );
+        
+        // Exchange rate refresh use case
+        exchangeRateRefreshUseCase = new ExchangeRateRefreshService(
+                vertx,
+                exchangeRateProvider,
+                exchangeRateRepository
+        );
 
         // Input adapters (handlers)
         ingestionHandler = new SettlementIngestionHandler(ingestionUseCase);
 
         log.info("Services wired up (Hexagonal Architecture)");
         
-        // CRITICAL: Initialize calculation rules before app can start
+        // CRITICAL: Initialize calculation rules and exchange rates before app can start
         log.info("Initializing calculation rules (critical for startup)...");
         return calculationRuleRepository.initialize()
-                .onSuccess(v -> log.info("Calculation rules loaded successfully - app can now start"))
-                .onFailure(error -> log.error("CRITICAL: Failed to load calculation rules - app cannot start", error));
+                .onSuccess(v -> log.info("Calculation rules loaded successfully"))
+                .onFailure(error -> log.error("CRITICAL: Failed to load calculation rules - app cannot start", error))
+                .compose(v -> {
+                    log.info("Starting exchange rate refresh service...");
+                    return exchangeRateRefreshUseCase.startPeriodicRefresh();
+                })
+                .onSuccess(v -> log.info("Exchange rate refresh service started - app can now start"))
+                .onFailure(error -> log.error("CRITICAL: Failed to start exchange rate service - app cannot start", error));
     }
 
     private Future<Void> startHttpServer() {
